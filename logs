@@ -42,7 +42,7 @@ end
 def framework_state(mesos_state, framework_id)
   frameworks_info = mesos_state['frameworks'].select{|a| a['id'] == framework_id}
   puts "Found #{frameworks_info.size} framework state" if frameworks_info.size != 1
-  frameworks_info.first
+  frameworks_info.last
 end
 
 def directory_for(framework_info, app_name)
