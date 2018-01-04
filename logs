@@ -2,8 +2,8 @@
 require 'httparty'
 
 HOST = ENV.fetch('HOST')
+DATA_TO_GET = ENV.fetch('DATA_LENGTH', '50000').to_i
 
-LINES_TO_GET = 5000
 MARATHON_URL = "https://marathon.#{HOST}"
 MESOS_PROXY_SUBDOMAIN = "web-mesos-proxy"
 HTTParty::Basement.default_options.update(verify: false)
@@ -84,12 +84,18 @@ state = framework_state(state, marathon_framework_id)
 dir = directory_for(state, marathon_name)
 
 file_with_inital_offset = get_file(hosts.first, dir, cmd)
-offset = file_with_inital_offset['offset'] - LINES_TO_GET
-file = get_file(hosts.first, dir, cmd, offset, LINES_TO_GET)
-logs = file['data']
+initial_offset =  file_with_inital_offset['offset']
+offset = initial_offset - DATA_TO_GET
+while offset < initial_offset
+  file = get_file(hosts.first, dir, cmd, offset, DATA_TO_GET)
+  logs = file['data']
 
-line = 0
-logs.lines.each_with_index do |l, i|
-  line = i if l.include?('Starting task')
+  offset = file['offset'] + logs.size
+
+  line = 0
+  logs.lines.each_with_index do |l, i|
+    line = i if l.include?('Starting task')
+  end
+
+  logs.lines[line + 1, (logs.size - 1)].each {|l| puts l}
 end
-logs.lines[line + 1, (logs.size - 1)].each {|l| puts l}
