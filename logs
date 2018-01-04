@@ -3,6 +3,7 @@ require 'httparty'
 
 HOST = ENV.fetch('HOST')
 
+LINES_TO_GET = 5000
 MARATHON_URL = "https://marathon.#{HOST}"
 MESOS_PROXY_SUBDOMAIN = "web-mesos-proxy"
 HTTParty::Basement.default_options.update(verify: false)
@@ -47,15 +48,16 @@ end
 
 def directory_for(framework_info, app_name)
   dirs = framework_info['executors']
-    .select{|e| e['id'].include?(app_name.split('/').first) }# && e['id'].include?(group)}
+    .select{|e| e['id'].include?(app_name.split('/').first) && e['id'].include?(app_name.split('/').last)}
     .map{|e| e['directory']}
 
-  puts "Found #{dirs.size} directories" if dirs.size != 1
+  puts "Found #{dirs.size} directories : #{dirs}" if dirs.size != 1
+
   dirs.first
 end
 
-def get_file(slave_addr, dir, file, offset=0)
-  file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/files/read.json?path=#{dir}/#{file}&offset=#{offset}"
+def get_file(slave_addr, dir, file, offset=-1, length=-1)
+  file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
   r = HTTParty.get(file_location, headers: {'X-Agent' => slave_addr})
   raise UnableToGetFile.new(r) unless r.success?
   r.parsed_response
@@ -66,7 +68,7 @@ marathon_name = ARGV[0]
 cmd = ARGV[1] || 'stdout'
 
 begin
-  raise ApplicationNotFound if (marathon_name == "" || marathon_name == nil)
+  raise ApplicationNotFound if marathon_name == '' || marathon_name == nil
   hosts = hosts_task_is_running_on(marathon_name)
 rescue ApplicationNotFound
   puts "Unable to find marathon task #{marathon_name}"
@@ -80,9 +82,12 @@ raise MesosTaskHasNoHost if hosts.empty?
 state = mesos_state(hosts.first)
 state = framework_state(state, marathon_framework_id)
 dir = directory_for(state, marathon_name)
-file = get_file(hosts.first, dir, cmd)
 
+file_with_inital_offset = get_file(hosts.first, dir, cmd)
+offset = file_with_inital_offset['offset'] - LINES_TO_GET
+file = get_file(hosts.first, dir, cmd, offset, LINES_TO_GET)
 logs = file['data']
+
 line = 0
 logs.lines.each_with_index do |l, i|
   line = i if l.include?('Starting task')
