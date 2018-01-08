@@ -86,6 +86,7 @@ dir = directory_for(state, marathon_name)
 file_with_inital_offset = get_file(hosts.first, dir, cmd)
 initial_offset =  file_with_inital_offset['offset']
 offset = initial_offset - DATA_TO_GET
+offset = 0 if offset < 1
 while offset < initial_offset
   file = get_file(hosts.first, dir, cmd, offset, DATA_TO_GET)
   logs = file['data']
