@@ -5,7 +5,7 @@ HOST = ENV.fetch('HOST')
 DATA_TO_GET = ENV.fetch('DATA_LENGTH', '50000').to_i
 
 MARATHON_URL = "https://marathon.#{HOST}"
-MESOS_PROXY_SUBDOMAIN = "web-mesos-proxy"
+MESOS_PROXY_SUBDOMAIN = 'web-mesos-proxy'
 HTTParty::Basement.default_options.update(verify: false)
 
 ApplicationNotFound = Class.new(StandardError)
@@ -14,17 +14,23 @@ UnableToGetFile = Class.new(StandardError)
 MesosTaskHasNoHost = Class.new(StandardError)
 
 def marathon_framework_id
-  response = HTTParty.get("#{MARATHON_URL}/v2/info").parsed_response
+  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/info"
+  response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                                'X-Port' => '8080'}).parsed_response
   response['frameworkId']
 end
 
 def available_apps
-  response = HTTParty.get("#{MARATHON_URL}/v2/apps").parsed_response
+  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps"
+  response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                                'X-Port' => '8080'}).parsed_response
   response['apps'].map{|a| a['id'][1..-1]}
 end
 
 def application_information(task)
-  r = HTTParty.get("#{MARATHON_URL}/v2/apps/#{task}")
+  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps/#{task}"
+  r = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                         'X-Port' => '8080'})
   raise ApplicationNotFound.new(r) unless r.success?
   r.parsed_response
 end
