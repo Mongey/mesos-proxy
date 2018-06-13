@@ -56,19 +56,18 @@ class Logs
     offset = initial_offset - data_to_get
     offset = 0 if offset < 1
     batch_size = [data_to_get, 50_000].max
-
+    start_line = 1
     while tail || offset < initial_offset
       file = get_file(hosts.first, dir, cmd, offset, batch_size)
       logs = file['data']
 
       offset = file['offset'] + logs.size
 
-      line = 0
-      logs.lines.each_with_index do |l, i|
-        line = i if l.include?('Starting task')
-      end
+      lines = logs.lines[start_line..-1].dup
+      start_line = 0 # needed to avoid a partial line on the first request
+      lines.reject { |line| line =~ /Starting task/ }
+      lines.each {|l| puts l}
 
-      logs.lines[line, logs.size].each {|l| puts l}
       sleep 1 if tail && offset > initial_offset
     end
   end
