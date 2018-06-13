@@ -1,108 +1,178 @@
 #!/usr/bin/env ruby
 require 'httparty'
 
-HOST = ENV.fetch('HOST')
-DATA_TO_GET = ENV.fetch('DATA_LENGTH', '50000').to_i
+class Logs
+  MESOS_PROXY_SUBDOMAIN = 'web-mesos-proxy'
+  HTTParty::Basement.default_options.update(verify: false)
 
-MARATHON_URL = "https://marathon.#{HOST}"
-MESOS_PROXY_SUBDOMAIN = 'web-mesos-proxy'
-HTTParty::Basement.default_options.update(verify: false)
+  ApplicationNotFound = Class.new(StandardError)
+  MesosStateNotFound = Class.new(StandardError)
+  UnableToGetFile = Class.new(StandardError)
+  MesosTaskHasNoHost = Class.new(StandardError)
 
-ApplicationNotFound = Class.new(StandardError)
-MesosStateNotFound = Class.new(StandardError)
-UnableToGetFile = Class.new(StandardError)
-MesosTaskHasNoHost = Class.new(StandardError)
+  def initialize(args)
+    if in_args(args, '-h', '--help')
+      display_usage
+      exit 0
+    end
+    @host = extract_from_args(args, '--host') || ENV.fetch('HOST')
+    if in_args(args, '-a', '--apps')
+      puts 'Available Apps:'
+      puts available_apps.map { |a| " - #{a}" }.sort
+      exit 0
+    end
+    @tail = in_args(args, '-t', '--tail')
+    @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000').to_i
 
-def marathon_framework_id
-  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/info"
-  response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
-                                                'X-Port' => '8080'}).parsed_response
-  response['frameworkId']
-end
-
-def available_apps
-  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps"
-  response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
-                                                'X-Port' => '8080'}).parsed_response
-  response['apps'].map{|a| a['id'][1..-1]}
-end
-
-def application_information(task)
-  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps/#{task}"
-  r = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
-                                         'X-Port' => '8080'})
-  raise ApplicationNotFound.new(r) unless r.success?
-  r.parsed_response
-end
-
-def hosts_task_is_running_on(task)
-  application_information(task)['app']['tasks'].map{|t| t['host']}
-end
-
-def mesos_state(slave_addr)
-  proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/state.json"
-  r = HTTParty.get(proxy_addr, headers: {'X-Agent' => slave_addr})
-  raise MesosStateNotFound.new(r) unless r.success?
-  r.parsed_response
-end
-
-def framework_state(mesos_state, framework_id)
-  frameworks_info = mesos_state['frameworks'].select{|a| a['id'] == framework_id}
-  puts "Found #{frameworks_info.size} framework state" if frameworks_info.size != 1
-  frameworks_info.last
-end
-
-def directory_for(framework_info, app_name)
-  dirs = framework_info['executors']
-    .select{|e| e['id'].include?(app_name.split('/').first) && e['id'].include?(app_name.split('/').last)}
-    .map{|e| e['directory']}
-
-  puts "Found #{dirs.size} directories : #{dirs}" if dirs.size != 1
-
-  dirs.first
-end
-
-def get_file(slave_addr, dir, file, offset=-1, length=-1)
-  file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
-  r = HTTParty.get(file_location, headers: {'X-Agent' => slave_addr})
-  raise UnableToGetFile.new(r) unless r.success?
-  r.parsed_response
-end
-
-
-marathon_name = ARGV[0]
-cmd = ARGV[1] || 'stdout'
-
-begin
-  raise ApplicationNotFound if marathon_name == '' || marathon_name == nil
-  hosts = hosts_task_is_running_on(marathon_name)
-rescue ApplicationNotFound
-  puts "Unable to find marathon task #{marathon_name}"
-  puts 'Valid task names are:'
-  puts available_apps
-  exit 1
-end
-
-raise MesosTaskHasNoHost if hosts.empty?
-
-state = mesos_state(hosts.first)
-state = framework_state(state, marathon_framework_id)
-dir = directory_for(state, marathon_name)
-
-file_with_inital_offset = get_file(hosts.first, dir, cmd)
-initial_offset =  file_with_inital_offset['offset']
-offset = initial_offset - DATA_TO_GET
-offset = 0 if offset < 1
-while offset < initial_offset
-  file = get_file(hosts.first, dir, cmd, offset, DATA_TO_GET)
-  logs = file['data']
-
-  offset = file['offset'] + logs.size
-
-  line = 0
-  logs.lines.each_with_index do |l, i|
-    line = i if l.include?('Starting task')
+    @marathon_name = args[0] 
+    @cmd = args[1] || 'stdout'
+    if marathon_name == '' || marathon_name == nil
+      display_usage
+      exit 0
+    end
   end
 
-  logs.lines[line + 1, (logs.size - 1)].each {|l| puts l}
+  attr_reader :marathon_name, :cmd, :host, :data_to_get, :tail
+
+  def run
+    begin
+      raise ApplicationNotFound if marathon_name == '' || marathon_name == nil
+      hosts = hosts_task_is_running_on(marathon_name)
+    rescue ApplicationNotFound
+      puts "Unable to find marathon task #{marathon_name}"
+      puts 'Valid task names are:'
+      puts available_apps.map { |a| " - #{a}" }.sort
+      exit 1
+    end
+
+    raise MesosTaskHasNoHost if hosts.empty?
+
+    state = mesos_state(hosts.first)
+    state = framework_state(state, marathon_framework_id)
+    dir = directory_for(state, marathon_name)
+
+    file_with_inital_offset = get_file(hosts.first, dir, cmd)
+    initial_offset =  file_with_inital_offset['offset']
+    offset = initial_offset - data_to_get
+    offset = 0 if offset < 1
+    batch_size = [data_to_get, 50_000].max
+    start_line = 1
+    while tail || offset < initial_offset
+      file = get_file(hosts.first, dir, cmd, offset, batch_size)
+      logs = file['data']
+
+      offset = file['offset'] + logs.size
+
+      lines = logs.lines[start_line..-1]
+      start_line = 0 # needed to avoid a partial line on the first request
+      if lines
+        lines.reject { |line| line =~ /Starting task/ }
+        lines.each {|l| puts l}
+      end
+      
+      sleep 1 if tail && offset > initial_offset
+    end
+  end
+
+  def display_usage
+    puts <<-USAGE
+   -h, --help       Show this help.
+   -t, --tail       Tail to log out as a continuous stream.
+   -a, --apps       List available apps
+   app_name         App to tail the logs for.
+   command          Commmand to use when tailing the logs, defaults to stdout.
+   -n XX            Amount of history to show (defaults to 0 if -t flag is passed, 50,000 chars otherwise).
+                    Can also be set via the ENV variable DATA_LENGTH.
+   -host            This marathon host to connect to (i.e. cukes-1.fc-unstable.co.uk).
+                    Can also be set via the ENV variable HOST.
+
+   Usage:
+     ./logs app_name [command] [-h] [-t] [-n XX] [--host XX]
+
+    USAGE
+  end
+
+  def in_args(args, *keys)
+    keys.any? do |key|
+      pos = args.index(key)
+      args.delete_at(pos) if pos
+    end
+  end
+
+  def extract_from_args(args, key)
+    if (pos = args.index(key))
+      value = args[pos + 1]
+      args.delete_at(pos)
+      args.delete_at(pos)
+      value
+    elsif (value = args.detect { |arg| arg =~ /^#{key}=/ })
+      pos = args.index(pos)
+      args.delete_at(pos)
+      value.match(/^#{key}=(.*)$/)[1]
+    end
+  end
+
+  def marathon_url
+    "https://marathon.#{host}"
+  end
+
+  def marathon_framework_id
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/info"
+    response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                                  'X-Port' => '8080'}).parsed_response
+    response['frameworkId']
+  end
+
+  def available_apps
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/apps"
+    response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                                  'X-Port' => '8080'}).parsed_response
+    response['apps'].map{|a| a['id'][1..-1]}
+  end
+
+  def application_information(task)
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/apps/#{task}"
+    r = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
+                                           'X-Port' => '8080'})
+    raise ApplicationNotFound.new(r) unless r.success?
+    r.parsed_response
+  end
+
+  def hosts_task_is_running_on(task)
+    application_information(task)['app']['tasks'].map{|t| t['host']}
+  end
+
+  def mesos_state(slave_addr)
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/state.json"
+    r = HTTParty.get(proxy_addr, headers: {'X-Agent' => slave_addr})
+    raise MesosStateNotFound.new(r) unless r.success?
+    r.parsed_response
+  end
+
+  def framework_state(mesos_state, framework_id)
+    frameworks_info = mesos_state['frameworks'].select{|a| a['id'] == framework_id}
+    puts "Found #{frameworks_info.size} framework state" if frameworks_info.size != 1
+    frameworks_info.last
+  end
+
+  def directory_for(framework_info, app_name)
+    dirs = framework_info['executors']
+      .select{|e| e['id'].include?(app_name.split('/').first) && e['id'].include?(app_name.split('/').last)}
+      .map{|e| e['directory']}
+
+    puts "Found #{dirs.size} directories : #{dirs}" if dirs.size != 1
+
+    dirs.first
+  end
+
+  def get_file(slave_addr, dir, file, offset=-1, length=-1)
+    file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
+    r = HTTParty.get(file_location, headers: {'X-Agent' => slave_addr})
+    raise UnableToGetFile.new(r) unless r.success?
+    r.parsed_response
+  end
 end
+
+logs = Logs.new(ARGV.clone)
+logs.run
+
