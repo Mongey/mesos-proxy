@@ -63,11 +63,13 @@ class Logs
 
       offset = file['offset'] + logs.size
 
-      lines = logs.lines[start_line..-1].dup
+      lines = logs.lines[start_line..-1]
       start_line = 0 # needed to avoid a partial line on the first request
-      lines.reject { |line| line =~ /Starting task/ }
-      lines.each {|l| puts l}
-
+      if lines
+        lines.reject { |line| line =~ /Starting task/ }
+        lines.each {|l| puts l}
+      end
+      
       sleep 1 if tail && offset > initial_offset
     end
   end
