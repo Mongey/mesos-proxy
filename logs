@@ -2,10 +2,6 @@
 require 'httparty'
 
 class Logs
-  HOST = ENV.fetch('HOST')
-  DATA_TO_GET = ENV.fetch('DATA_LENGTH', '50000').to_i
-
-  MARATHON_URL = "https://marathon.#{HOST}"
   MESOS_PROXY_SUBDOMAIN = 'web-mesos-proxy'
   HTTParty::Basement.default_options.update(verify: false)
 
@@ -14,12 +10,29 @@ class Logs
   UnableToGetFile = Class.new(StandardError)
   MesosTaskHasNoHost = Class.new(StandardError)
 
-  def initialize(marathon_name, cmd)
-    @marathon_name = marathon_name
-    @cmd = cmd || 'stdout'
+  def initialize(args)
+    if in_args(args, '-h')
+      display_usage
+      exit 0
+    end
+    @host = extract_from_args(args, '--host') || ENV.fetch('HOST')
+    if in_args(args, '-a')
+      puts 'Available Apps:'
+      puts available_apps.map { |a| " - #{a}" }.sort
+      exit 0
+    end
+    @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', '50000').to_i
+    @tail = in_args(args, '-t')
+
+    @marathon_name = args[0] 
+    @cmd = args[1] || 'stdout'
+    if marathon_name == '' || marathon_name == nil
+      display_usage
+      exit 0
+    end
   end
 
-  attr_reader :marathon_name, :cmd
+  attr_reader :marathon_name, :cmd, :host, :data_to_get
 
   def run
     begin
@@ -28,7 +41,7 @@ class Logs
     rescue ApplicationNotFound
       puts "Unable to find marathon task #{marathon_name}"
       puts 'Valid task names are:'
-      puts available_apps
+      puts available_apps.map { |a| " - #{a}" }.sort
       exit 1
     end
 
@@ -40,10 +53,10 @@ class Logs
 
     file_with_inital_offset = get_file(hosts.first, dir, cmd)
     initial_offset =  file_with_inital_offset['offset']
-    offset = initial_offset - DATA_TO_GET
+    offset = initial_offset - data_to_get
     offset = 0 if offset < 1
     while offset < initial_offset
-      file = get_file(hosts.first, dir, cmd, offset, DATA_TO_GET)
+      file = get_file(hosts.first, dir, cmd, offset, data_to_get)
       logs = file['data']
 
       offset = file['offset'] + logs.size
@@ -57,22 +70,66 @@ class Logs
     end
   end
 
+  def display_usage
+    puts <<-USAGE
+   -h               Show this help.
+   -t               Tail to log out as a continuous stream.
+   -a               List available apps
+   app_name         App to tail the logs for.
+   command          Commmand to use when tailing the logs, defaults to stdout.
+   -n XX            Amount of history to show (defaults to 50,000 chars).
+                    Can also be set via the ENV variable DATA_LENGTH.
+   -host            This marathon host to connect to (i.e. cukes-1.fc-unstable.co.uk).
+                    Can also be set via the ENV variable HOST.
+
+   Usage:
+     ./logs app_name [command] [-h] [-t] [-n XX] [--host XX]
+
+    USAGE
+  end
+
+  def in_args(args, key)
+    if (pos = args.index(key))
+      args.delete_at(pos)
+      true
+    else
+      false
+    end
+  end
+
+  def extract_from_args(args, key)
+    if (pos = args.index(key))
+      value = args[pos + 1]
+      args.delete_at(pos)
+      args.delete_at(pos)
+      value
+    elsif (value = args.detect { |arg| arg =~ /^#{key}=/ })
+      pos = args.index(pos)
+      args.delete_at(pos)
+      value.match(/^#{key}=(.*)$/)[1]
+    end
+  end
+
+  def marathon_url
+    "https://marathon.#{host}"
+  end
+
   def marathon_framework_id
-    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/info"
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/info"
     response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
                                                   'X-Port' => '8080'}).parsed_response
     response['frameworkId']
   end
 
   def available_apps
-    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps"
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/apps"
     response = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
                                                   'X-Port' => '8080'}).parsed_response
     response['apps'].map{|a| a['id'][1..-1]}
   end
 
   def application_information(task)
-    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/v2/apps/#{task}"
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/v2/apps/#{task}"
     r = HTTParty.get(proxy_addr, headers: {'X-Agent' => 'marathon.service.consul',
                                            'X-Port' => '8080'})
     raise ApplicationNotFound.new(r) unless r.success?
@@ -84,7 +141,7 @@ class Logs
   end
 
   def mesos_state(slave_addr)
-    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/state.json"
+    proxy_addr = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/state.json"
     r = HTTParty.get(proxy_addr, headers: {'X-Agent' => slave_addr})
     raise MesosStateNotFound.new(r) unless r.success?
     r.parsed_response
@@ -107,13 +164,13 @@ class Logs
   end
 
   def get_file(slave_addr, dir, file, offset=-1, length=-1)
-    file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{HOST}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
+    file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
     r = HTTParty.get(file_location, headers: {'X-Agent' => slave_addr})
     raise UnableToGetFile.new(r) unless r.success?
     r.parsed_response
   end
 end
 
-logs = Logs.new(ARGV[0], ARGV[1])
+logs = Logs.new(ARGV.clone)
 logs.run
 
