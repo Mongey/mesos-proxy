@@ -21,8 +21,8 @@ class Logs
       puts available_apps.map { |a| " - #{a}" }.sort
       exit 0
     end
-    @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', '50000').to_i
     @tail = in_args(args, '-t')
+    @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000').to_i
 
     @marathon_name = args[0] 
     @cmd = args[1] || 'stdout'
@@ -32,7 +32,7 @@ class Logs
     end
   end
 
-  attr_reader :marathon_name, :cmd, :host, :data_to_get
+  attr_reader :marathon_name, :cmd, :host, :data_to_get, :tail
 
   def run
     begin
@@ -55,8 +55,10 @@ class Logs
     initial_offset =  file_with_inital_offset['offset']
     offset = initial_offset - data_to_get
     offset = 0 if offset < 1
-    while offset < initial_offset
-      file = get_file(hosts.first, dir, cmd, offset, data_to_get)
+    batch_size = [data_to_get, 50_000].max
+
+    while tail || offset < initial_offset
+      file = get_file(hosts.first, dir, cmd, offset, batch_size)
       logs = file['data']
 
       offset = file['offset'] + logs.size
@@ -66,7 +68,8 @@ class Logs
         line = i if l.include?('Starting task')
       end
 
-      logs.lines[line + 1, (logs.size - 1)].each {|l| puts l}
+      logs.lines[line, logs.size].each {|l| puts l}
+      sleep 1 if tail && offset > initial_offset
     end
   end
 
@@ -77,7 +80,7 @@ class Logs
    -a               List available apps
    app_name         App to tail the logs for.
    command          Commmand to use when tailing the logs, defaults to stdout.
-   -n XX            Amount of history to show (defaults to 50,000 chars).
+   -n XX            Amount of history to show (defaults to 0 if -t flag is passed, 50,000 chars otherwise).
                     Can also be set via the ENV variable DATA_LENGTH.
    -host            This marathon host to connect to (i.e. cukes-1.fc-unstable.co.uk).
                     Can also be set via the ENV variable HOST.
