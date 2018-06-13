@@ -11,17 +11,17 @@ class Logs
   MesosTaskHasNoHost = Class.new(StandardError)
 
   def initialize(args)
-    if in_args(args, '-h')
+    if in_args(args, '-h', '--help')
       display_usage
       exit 0
     end
     @host = extract_from_args(args, '--host') || ENV.fetch('HOST')
-    if in_args(args, '-a')
+    if in_args(args, '-a', '--apps')
       puts 'Available Apps:'
       puts available_apps.map { |a| " - #{a}" }.sort
       exit 0
     end
-    @tail = in_args(args, '-t')
+    @tail = in_args(args, '-t', '--tail')
     @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000').to_i
 
     @marathon_name = args[0] 
@@ -74,9 +74,9 @@ class Logs
 
   def display_usage
     puts <<-USAGE
-   -h               Show this help.
-   -t               Tail to log out as a continuous stream.
-   -a               List available apps
+   -h, --help       Show this help.
+   -t, --tail       Tail to log out as a continuous stream.
+   -a, --apps       List available apps
    app_name         App to tail the logs for.
    command          Commmand to use when tailing the logs, defaults to stdout.
    -n XX            Amount of history to show (defaults to 0 if -t flag is passed, 50,000 chars otherwise).
@@ -90,12 +90,10 @@ class Logs
     USAGE
   end
 
-  def in_args(args, key)
-    if (pos = args.index(key))
-      args.delete_at(pos)
-      true
-    else
-      false
+  def in_args(args, *keys)
+    keys.any? do |key|
+      pos = args.index(key)
+      args.delete_at(pos) if pos
     end
   end
 
