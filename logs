@@ -22,7 +22,7 @@ class Logs
       exit 0
     end
     @tail = in_args(args, '-t', '--tail')
-    @data_to_get = extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000').to_i
+    @data_to_get = (extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000')).to_i
 
     @marathon_name = args[0] 
     @cmd = args[1] || 'stdout'
@@ -55,7 +55,7 @@ class Logs
     initial_offset =  file_with_inital_offset['offset']
     offset = initial_offset - data_to_get
     offset = 0 if offset < 1
-    batch_size = [data_to_get, 50_000].max
+    batch_size = [data_to_get, 1_000_000].max
     start_line = 1
     while tail || offset < initial_offset
       file = get_file(hosts.first, dir, cmd, offset, batch_size)
@@ -63,13 +63,14 @@ class Logs
 
       offset = file['offset'] + logs.size
 
-      lines = logs.lines[start_line..-1]
+      lines = logs.lines[start_line..-2]
       start_line = 0 # needed to avoid a partial line on the first request
       if lines
+        offset -= logs.lines[-1].size
         lines.reject { |line| line =~ /Starting task/ }
         lines.each {|l| puts l}
       end
-      
+
       sleep 1 if tail && offset > initial_offset
     end
   end
