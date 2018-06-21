@@ -65,7 +65,7 @@ class Logs
 
       lines = logs.lines[start_line..-2]
       start_line = 0 # needed to avoid a partial line on the first request
-      if lines
+      if lines && !logs.lines.empty?
         offset -= logs.lines[-1].size
         lines.reject { |line| line =~ /Starting task/ }
         lines.each {|l| puts l}
