@@ -15,6 +15,7 @@ class Logs
       display_usage
       exit 0
     end
+
     @host = extract_from_args(args, '--host') || ENV.fetch('HOST')
     if in_args(args, '-a', '--apps')
       puts 'Available Apps:'
@@ -24,41 +25,74 @@ class Logs
     @tail = in_args(args, '-t', '--tail')
     @data_to_get = (extract_from_args(args, '-n') || ENV.fetch('DATA_LENGTH', @tail ? '0' : '50000')).to_i
 
-    @marathon_name = args[0] 
-    @cmd = args[1] || 'stdout'
-    if marathon_name == '' || marathon_name == nil
-      display_usage
-      exit 0
+    if in_args(args, '-s', '--system-log')
+      @system_log = true
+      if args.any?
+        display_usage
+        exit 0
+      end
+    else
+      @marathon_name = args[0]
+      @cmd = args[1] || 'stdout'
+      if marathon_name == '' || marathon_name == nil
+        display_usage
+        exit 0
+      end
     end
   end
 
-  attr_reader :marathon_name, :cmd, :host, :data_to_get, :tail
+  attr_reader :marathon_name, :cmd, :host, :data_to_get, :tail, :system_log
 
   def run
-    begin
-      raise ApplicationNotFound if marathon_name == '' || marathon_name == nil
-      hosts = hosts_task_is_running_on(marathon_name)
-    rescue ApplicationNotFound
-      puts "Unable to find marathon task #{marathon_name}"
-      puts 'Valid task names are:'
-      puts available_apps.map { |a| " - #{a}" }.sort
-      exit 1
+    if system_log
+      output_system_log
+    else
+      output_app_log
     end
+  end
 
-    raise MesosTaskHasNoHost if hosts.empty?
+  def output_system_log
+    hosts = get_hosts('marathon-consul/marathon-consul')
+    path = "/slave/log"
+
+    output_file(host: hosts.first, path: path, reject: ->(line) { line =~ /angular\.callbacks|jsonp=jQuery|files\/read/ })
+  end
+
+  def output_app_log
+    hosts = get_hosts
 
     state = mesos_state(hosts.first)
     state = framework_state(state, marathon_framework_id)
     dir = directory_for(state, marathon_name)
+    path = "#{dir}/#{cmd}"
 
-    file_with_inital_offset = get_file(hosts.first, dir, cmd)
+    output_file(host: hosts.first, path: path, reject: ->(line) { line =~ /Starting task/ })
+  end
+
+  def get_hosts(name=marathon_name)
+    begin
+      raise ApplicationNotFound if name == '' || name == nil
+      hosts = hosts_task_is_running_on(name)
+      raise MesosTaskHasNoHost if hosts.empty?
+    rescue ApplicationNotFound
+      puts "Unable to find marathon task #{name}"
+      puts 'Valid task names are:'
+      puts available_apps.map { |a| " - #{a}" }.sort
+      exit 1
+    end
+    hosts
+  end
+
+  def output_file(host:, path:, reject:)
+    file_with_inital_offset = get_file(host, path)
     initial_offset =  file_with_inital_offset['offset']
     offset = initial_offset - data_to_get
     offset = 0 if offset < 1
     batch_size = [data_to_get, 1_000_000].max
     start_line = 1
+
     while tail || offset < initial_offset
-      file = get_file(hosts.first, dir, cmd, offset, batch_size)
+      file = get_file(host, path, offset, batch_size)
       logs = file['data']
 
       offset = file['offset'] + logs.size
@@ -67,7 +101,8 @@ class Logs
       start_line = 0 # needed to avoid a partial line on the first request
       if lines && !logs.lines.empty?
         offset -= logs.lines[-1].size
-        lines.reject { |line| line =~ /Starting task/ }
+
+        lines.reject!(&reject)
         lines.each {|l| puts l}
       end
 
@@ -80,6 +115,7 @@ class Logs
    -h, --help       Show this help.
    -t, --tail       Tail to log out as a continuous stream.
    -a, --apps       List available apps
+   -s, --system     System log
    app_name         App to tail the logs for.
    command          Commmand to use when tailing the logs, defaults to stdout.
    -n XX            Amount of history to show (defaults to 0 if -t flag is passed, 50,000 chars otherwise).
@@ -89,6 +125,7 @@ class Logs
 
    Usage:
      ./logs app_name [command] [-h] [-t] [-n XX] [--host XX]
+     ./logs -s [-n XX] [--host XX]
 
     USAGE
   end
@@ -166,8 +203,8 @@ class Logs
     dirs.first
   end
 
-  def get_file(slave_addr, dir, file, offset=-1, length=-1)
-    file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/files/read.json?path=#{dir}/#{file}&offset=#{offset}&length=#{length}"
+  def get_file(slave_addr, path, offset=-1, length=-1)
+    file_location = "https://#{MESOS_PROXY_SUBDOMAIN}.#{host}/files/read.json?path=#{path}&offset=#{offset}&length=#{length}"
     r = HTTParty.get(file_location, headers: {'X-Agent' => slave_addr})
     raise UnableToGetFile.new(r) unless r.success?
     r.parsed_response
