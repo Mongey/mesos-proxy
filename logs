@@ -52,7 +52,7 @@ class Logs
   end
 
   def output_system_log
-    hosts = get_hosts('marathon-consul/marathon-consul')
+    hosts = get_hosts('mesos-proxy/web')
     path = "/slave/log"
 
     output_file(host: hosts.first, path: path, reject: ->(line) { line =~ /angular\.callbacks|jsonp=jQuery|files\/read/ })
