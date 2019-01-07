@@ -3,7 +3,9 @@
 
 Access logs of [Marathon](https://mesosphere.github.io/marathon/) tasks from the command line.
 
-`main.go` A proxy server to access files from a mesos slaves sandbox.
+![](https://mongey.net/images/mesos-proxy.gif)
+
+`main.go` A proxy server to access files from a Mesos slaves sandbox.
 
 `logs ` works with `main.go` allowing you to retrieve stdout / stderr from a
 running Marathon task.
